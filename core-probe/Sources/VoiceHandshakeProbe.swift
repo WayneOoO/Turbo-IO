@@ -92,7 +92,7 @@ final class VoiceHandshakeProbe {
                         return
                     }
                 }
-                if let id = self.standby.cloudSessionID, self.standby.cloudEnabled, !sameASR {
+                if let id = self.standby.cloudSessionID, self.standby.cloudEnabled, !sameASR, !HermesVoiceHub.shared.enabled {
                     if let until = self.incrementalFixtureUntil, ProcessInfo.processInfo.systemUptime <= until {
                         self.incrementalFixtureUntil = nil
                         self.runIncrementalFixture(id:id)
@@ -121,6 +121,8 @@ final class VoiceHandshakeProbe {
                 self.cloud.cancel(clearHistory:phase == .disabled || phase == .waitingForConnection)
                 self.endBackgroundTask()
             }
+            // Hermes 版：一旦离开收音阶段就把本轮攒下的音频交出去（收手 / 超时 / 关闭待命都走这里）。
+            if self.standby.cloudEnabled, self.standby.phase != .recording { HermesVoiceHub.shared.finish() }
         }
     }
     func armIncrementalFixture() {
@@ -322,7 +324,8 @@ final class VoiceHandshakeProbe {
         let frames = audio.withUnsafeBytes { bytes in
             if standby.cloudEnabled {
                 return pcm.withUnsafeMutableBufferPointer { samples in
-                    if standby.continuousASREnabled {
+                    // Hermes 版：桥接模式下始终解码并给出每 10 ms 的语音掩码，手机侧据此判定「说完了」。
+                    if standby.continuousASREnabled, !HermesVoiceHub.shared.enabled {
                         return RNVoiceDecodePCM(nativeVAD,bytes.bindMemory(to:UInt8.self).baseAddress,bytes.count,samples.baseAddress,samples.count)
                     }
                     return RNVoiceVADProcessPCM(nativeVAD,bytes.bindMemory(to:UInt8.self).baseAddress,bytes.count,&mask,samples.baseAddress,samples.count)
@@ -338,7 +341,12 @@ final class VoiceHandshakeProbe {
         if vadPackets == 1 { log?("VAD首包解码成功 packetBytes=\(audio.count) samples=\(frames * 160) frames10ms=\(frames)") }
         if standby.cloudEnabled {
             let data = pcm.withUnsafeBytes { Data($0.prefix(Int(frames) * 160 * 2)) }
-            cloud.appendPCM(data)
+            // Hermes 版：PCM 交给 App 的语音汇合点直发电脑桥接，不再连阿里云 DashScope。
+            if HermesVoiceHub.shared.enabled {
+                HermesVoiceHub.shared.append(pcm: data, speechMask: mask, frames: Int(frames))
+            } else {
+                cloud.appendPCM(data)
+            }
         }
         guard !standby.continuousASREnabled else { return }
         for index in 0..<Int(frames) {

@@ -15,7 +15,9 @@ enum CloudVoiceKeys {
               let data = item as? Data else { return nil }
         return String(data:data,encoding:.utf8)
     }
-    static var ready: Bool { CloudASRHostSettings.normalize(asrHost) != nil && Self.get(asrService) != nil && Self.get(llmService) != nil }
+    // Hermes 版：识别在电脑桥接那一侧，App 不再要求阿里云 / DeepSeek 密钥；
+    // 桥接语音汇合点一旦接上，云端语音就视为可用。
+    static var ready: Bool { HermesVoiceHub.shared.enabled || (CloudASRHostSettings.normalize(asrHost) != nil && Self.get(asrService) != nil && Self.get(llmService) != nil) }
     static func save(_ value: String, service: String) -> Bool {
         let key = value.trimmingCharacters(in:.whitespacesAndNewlines)
         guard key.hasPrefix("sk-"), key.utf8.count <= 512,
