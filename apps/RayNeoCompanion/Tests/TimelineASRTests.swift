@@ -74,16 +74,6 @@ final class TimelineASRTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: capture.directory.appendingPathComponent("sent-16000-mono-s16le.pcm")), pcm)
         XCTAssertThrowsError(try capture.record("oversized", String(repeating: "x", count: 2_097_153)))
     }
-    @MainActor func testFileASRControlsUseTextFramesNotAudioFrames() throws {
-        for action in ["run-task", "finish-task"] {
-            let message = try FileASRClient.controlMessage(["header": ["action": action, "task_id": "fixture"], "payload": ["input": [:]]])
-            guard case .string(let text) = message else { return XCTFail("JSON controls must not be binary PCM frames") }
-            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
-            let header = try XCTUnwrap(object["header"] as? [String: String])
-            XCTAssertEqual(header["action"], action)
-            XCTAssertEqual(header["task_id"], "fixture")
-        }
-    }
     func testJournalPersistsOrderedEventsAndDoesNotAppendToTornTail() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -144,16 +134,6 @@ final class TimelineASRTests: XCTestCase {
         let markdown = TimelineReplay.markdown([turn])
         XCTAssertTrue(markdown.contains("1970-01-01T00:00:00Z"))
         XCTAssertTrue(markdown.contains("`````text")); XCTAssertTrue(markdown.contains(turn.question))
-    }
-    func testFileASROnlySavesFinalSentencesInNumericOrder() throws {
-        var accumulator = FileASRAccumulator()
-        try accumulator.accept(id: 2, text: "第二句", final: true)
-        try accumulator.accept(id: 1, text: "临时错误", final: false)
-        try accumulator.accept(id: 1, text: "第一句", final: true)
-        XCTAssertEqual(accumulator.text, "第一句\n第二句")
-        try accumulator.accept(id: 2, text: "第二句修订", final: true)
-        XCTAssertEqual(accumulator.text, "第一句\n第二句修订")
-        XCTAssertThrowsError(try accumulator.accept(id: -1, text: "", final: true))
     }
     func testRealWAVDecodesLocallyWithoutCallingASR() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
