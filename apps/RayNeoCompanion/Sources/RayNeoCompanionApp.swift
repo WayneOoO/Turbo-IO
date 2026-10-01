@@ -12,8 +12,8 @@ struct RayNeoCompanionApp: App {
                 .environmentObject(store.archive.audioInspection)
                 .environmentObject(store.books)
                 .environmentObject(store.voice)
-                .environmentObject(store.codex)
-                .environmentObject(store.codexPush)
+                .environmentObject(store.hermes)
+                .environmentObject(store.hermesPush)
                 .environmentObject(store.timeline)
                 .environmentObject(store.recordingASR)
                 .environmentObject(store.features)
@@ -60,7 +60,7 @@ struct RootView: View {
         .onPreferenceChange(CompanionTabBarHiddenPreference.self) { hideTabBar = $0 }
         .task {
             while !Task.isCancelled {
-                await store.codexPush.tick()
+                await store.hermesPush.tick()
                 do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { break }
             }
         }

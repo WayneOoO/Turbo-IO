@@ -110,7 +110,7 @@ final class CompanionStore: ObservableObject {
     let books: BookLibrary
     let timeline: ConversationTimeline
     let voice: CompanionVoiceRuntime
-    let codex: CodexCompanion
+    let hermes: HermesCompanion
     lazy var alwaysOn = AlwaysOnLocalProbe(defaults: defaults,
         root: customRecordingRoot?.deletingLastPathComponent().appendingPathComponent("AlwaysOnLocalProbeV1")
             ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("AlwaysOnLocalProbeV1"),
@@ -123,10 +123,10 @@ final class CompanionStore: ObservableObject {
             guard let self else { throw DeviceFeatureError.disconnected }
             try self.voice.sendBusiness(business, payload: packet)
         })
-    lazy var codexPush = CodexPush(codex: codex, defaults: defaults,
+    lazy var hermesPush = HermesPush(hermes: hermes, defaults: defaults,
         canDeliver: { [weak self] in
             guard let self else { return false }
-            // User opted into Codex alerts; restore only their enabled master,
+            // User opted into Hermes alerts; restore only their enabled master,
             // never overwrite the glasses' app-source filter configuration.
             if self.notifications.canTest && !self.notifications.masterApplied { self.notifications.applyMaster() }
             return self.notifications.canTest && self.notifications.masterApplied
@@ -183,8 +183,8 @@ final class CompanionStore: ObservableObject {
         self.customRecordingRoot = recordingRoot
         timeline = ConversationTimeline(root: archiveRoot?.deletingLastPathComponent().appendingPathComponent("ConversationTimelineV1"))
         voice = CompanionVoiceRuntime(timeline: timeline)
-        codex = CodexCompanion(defaults: defaults)
-        voice.codex = codex
+        hermes = HermesCompanion(defaults: defaults)
+        voice.hermes = hermes
         books = BookLibrary(root: archiveRoot?.deletingLastPathComponent().appendingPathComponent("ReadingLibraryV1"), allowsTestFixture: allowsBookTestFixture)
         archive = LocalArchiveController(rootDirectory: archiveRoot, allowsTestFixture: allowsArchiveTestFixture)
         todos = restore("todos") ?? []

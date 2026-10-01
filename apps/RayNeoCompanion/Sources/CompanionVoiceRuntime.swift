@@ -15,7 +15,7 @@ import Combine
     @Published private(set) var latestEvent = "尚未加载设备通信核心"
     @Published var error: String?
     private let timeline: ConversationTimeline?
-    weak var codex: CodexCompanion?
+    weak var hermes: HermesCompanion?
     private var activeTurn: UUID?
     var onBusiness: ((String, UInt8, Data) -> Void)?
     var onBusinessLoss: (() -> Void)?
@@ -74,10 +74,10 @@ import Combine
         #if COMPANION_DEVICE
         guard poll == nil else { refresh(); return }
         controller.companionBusiness = { [weak self] in self?.onBusiness?($0,$1,$2) }
-        controller.companionTools = { [weak self] in self?.codex?.toolDefinitions ?? [] }
+        controller.companionTools = { [weak self] in self?.hermes?.toolDefinitions ?? [] }
         controller.companionExecuteTool = { [weak self] name, arguments, id in
-            guard let codex = self?.codex else { return "Codex工具未配置，未执行。" }
-            return await codex.executeTool(name: name, arguments: arguments, requestID: id)
+            guard let hermes = self?.hermes else { return "Hermes 工具未配置，未执行。" }
+            return await hermes.executeTool(name: name, arguments: arguments, requestID: id)
         }
         controller.companionBusinessLoss = { [weak self] in self?.onBusinessLoss?() }
         controller.companionLog = { [weak self] line in self?.latestEvent = String(line.prefix(200)) }
