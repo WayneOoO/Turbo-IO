@@ -8,10 +8,10 @@ enum RecordingASRError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unsupported: return "此音频无法由 iOS 解码。请使用有效 WAV、M4A、MP3 等系统支持格式；原始眼镜容器可能需要额外转换。"
-        case .limit: return "手动转写暂限 10 分钟音频 / 32 MiB 解码 PCM。"
-        case .credentials: return "请先在真机语音页保存阿里云 ASR 密钥。模拟器不调用真实语音服务。"
-        case .remote: return "ASR 连接、超时或协议失败，没有保存为成功转写；可重试。"
-        case .empty: return "ASR 未返回有效最终文字，没有生成空笔记。"
+        case .limit: return "手动转写暂限约 4 分钟音频 / 32 MiB 解码 PCM；超出的部分没有提交。"
+        case .credentials: return "请先在「Hermes 任务」页保存桥接地址与令牌；模拟器不调用真实语音服务。"
+        case .remote: return "桥接连接、超时或响应失败，没有保存为成功转写；可重试。"
+        case .empty: return "桥接未返回有效文字，没有生成空笔记。"
         }
     }
 }
@@ -82,25 +82,9 @@ enum RecordingPCMDecoder {
     }
 }
 
-struct FileASRAccumulator {
-    private var sentences: [Int: String] = [:]
-    mutating func accept(id: Int, text: String, final: Bool) throws {
-        guard id >= 0, id <= 100_000, text.utf8.count <= 16_384 else { throw RecordingASRError.remote }
-        guard final else { return }
-        guard sentences.count < 6_000 || sentences[id] != nil else { throw RecordingASRError.limit }
-        sentences[id] = text
-        guard sentences.values.reduce(0, { $0 + $1.utf8.count }) <= 1_024 * 1_024 else { throw RecordingASRError.limit }
-    }
-    var text: String { sentences.keys.sorted().compactMap { sentences[$0] }.filter { !$0.isEmpty }.joined(separator: "\n") }
-}
-
-private final class FileASRNoRedirect: NSObject, URLSessionTaskDelegate {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
-}
-
-/// Explicit per-run local capture. No headers; redact the configured secret if
-/// it is unexpectedly echoed by a remote error. The source recording is untouched.
+/// Explicit per-run local capture. No request headers; the audio is sent to the
+/// user's own bridge without any key, so there is nothing to redact by default.
+/// The source recording is untouched.
 final class FileASRDiagnostic {
     let directory: URL
     private let secret: String
@@ -128,83 +112,25 @@ final class FileASRDiagnostic {
     }
 }
 
-@MainActor enum FileASRClient {
-    // DashScope controls are UTF-8 text frames; only PCM is binary.
-    static func controlMessage(_ object: [String: Any]) throws -> URLSessionWebSocketTask.Message {
-        .string(String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self))
-    }
-    static func transcribe(pcm: Data, key: String, host: String, diagnostic: FileASRDiagnostic? = nil, progress: @escaping (Double) -> Void) async throws -> String {
-        guard let host = CloudASRHostSettings.normalize(host) else { throw RecordingASRError.credentials }
-        guard !pcm.isEmpty, pcm.count % 2 == 0, pcm.count <= 32 * 1_024 * 1_024 else { throw RecordingASRError.limit }
-        let config = URLSessionConfiguration.ephemeral
-        config.urlCache = nil; config.httpCookieStorage = nil; config.timeoutIntervalForRequest = 20
-        config.timeoutIntervalForResource = 660
-        let session = URLSession(configuration: config, delegate: FileASRNoRedirect(), delegateQueue: nil)
-        // The caller captures this host with its host-scoped credential before decoding.
-        var request = URLRequest(url: URL(string: "wss://\(host)/api-ws/v1/inference")!)
-        request.setValue("bearer " + key, forHTTPHeaderField: "Authorization")
-        let ws = session.webSocketTask(with: request); ws.maximumMessageSize = 65_536
-        let id = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        var sender: Task<Void, Error>?
-        let watchdog = Task {
-            try await Task.sleep(nanoseconds: UInt64(Double(pcm.count) / 32_000 + 40) * 1_000_000_000)
-            ws.cancel(with: .goingAway, reason: nil)
+/// 手动转写：整段音频 POST 到用户自己的 Hermes 桥（服务器侧内置豆包 ASR）。
+/// 本机不再持有任何语音密钥，也不再连阿里云 DashScope。
+@MainActor enum HermesFileASR {
+    static func transcribe(pcm: Data, endpoint: String, token: String, sampleRate: Int = 16_000,
+                           diagnostic: FileASRDiagnostic? = nil) async throws -> String {
+        guard pcm.count % 2 == 0 else { throw RecordingASRError.unsupported }
+        guard let wav = HermesVoiceAudio.wav(pcm: pcm, sampleRate: sampleRate) else { throw RecordingASRError.empty }
+        guard wav.count <= HermesVoiceClient.maximumBytes else { throw RecordingASRError.limit }
+        try? diagnostic?.record("upload", "bytes=\(wav.count) format=wav sampleRate=\(sampleRate) channels=1 bits=16")
+        do {
+            let result = try await HermesVoiceClient.send(audio: wav, contentType: "audio/wav", endpoint: endpoint, token: token)
+            let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            try? diagnostic?.record("parsed-final", "characters=\(text.count)")
+            guard !text.isEmpty else { throw RecordingASRError.empty }
+            return text
+        } catch let failure {
+            try? diagnostic?.record("client-error", "description=\((failure as? LocalizedError)?.localizedDescription ?? "unknown")")
+            throw failure
         }
-        defer { watchdog.cancel(); sender?.cancel(); ws.cancel(with: .normalClosure, reason: nil); session.invalidateAndCancel() }
-        ws.resume()
-        return try await withTaskCancellationHandler {
-            let run: [String: Any] = ["header": ["action": "run-task", "task_id": id, "streaming": "duplex"],
-                "payload": ["task_group": "audio", "task": "asr", "function": "recognition", "model": "qwen-audio-3.0-asr-flash-streaming",
-                            "parameters": ["format": "pcm", "sample_rate": 16000], "input": [:]]]
-            try diagnostic?.record("run-task", String(decoding: JSONSerialization.data(withJSONObject: run), as: UTF8.self))
-            try await ws.send(controlMessage(run))
-            var accumulator = FileASRAccumulator(), sentAll = false, events = 0
-            while !Task.isCancelled {
-                let message = try await ws.receive()
-                let data: Data
-                switch message { case .data(let bytes): data = bytes; case .string(let text): data = Data(text.utf8); @unknown default: throw RecordingASRError.remote }
-                try diagnostic?.record("received", String(decoding: data, as: UTF8.self))
-                events += 1
-                guard events <= 30_000, data.count <= 65_536,
-                      let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let header = object["header"] as? [String: Any], header["task_id"] as? String == id else { throw RecordingASRError.remote }
-                switch header["event"] as? String {
-                case "task-started":
-                    guard sender == nil else { throw RecordingASRError.remote }
-                    sender = Task { @MainActor in
-                        do {
-                            for offset in stride(from: 0, to: pcm.count, by: 3200) {
-                                try Task.checkCancellation()
-                                let end = min(pcm.count, offset + 3200)
-                                try await ws.send(.data(pcm.subdata(in: offset..<end)))
-                                progress(Double(end) / Double(pcm.count))
-                                try await Task.sleep(nanoseconds: 100_000_000)
-                            }
-                            sentAll = true
-                            try diagnostic?.record("sent-audio", "bytes=\(pcm.count) sample_rate=16000 channels=1 format=s16le")
-                            try await ws.send(controlMessage(["header": ["action": "finish-task", "task_id": id, "streaming": "duplex"], "payload": ["input": [:]]]))
-                        } catch { ws.cancel(with: .goingAway, reason: nil); throw error }
-                    }
-                case "result-generated":
-                    if let payload = object["payload"] as? [String: Any], let output = payload["output"] as? [String: Any],
-                       let sentence = output["sentence"] as? [String: Any], sentence["heartbeat"] as? Bool != true,
-                       let number = sentence["sentence_id"] as? NSNumber, number.doubleValue == Double(number.intValue),
-                       let text = sentence["text"] as? String {
-                        try accumulator.accept(id: number.intValue, text: text, final: sentence["sentence_end"] as? Bool == true)
-                    }
-                case "task-finished":
-                    guard sentAll else { throw RecordingASRError.remote }
-                    try await sender?.value
-                    let text = accumulator.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    try diagnostic?.record("parsed-final", "characters=\(text.count)")
-                    guard !text.isEmpty else { throw RecordingASRError.empty }
-                    return text
-                case "task-failed": throw RecordingASRError.remote
-                default: break
-                }
-            }
-            throw CancellationError()
-        } onCancel: { ws.cancel(with: .goingAway, reason: nil) }
     }
 }
 
@@ -220,8 +146,8 @@ final class FileASRDiagnostic {
         guard work == nil else { return }
         recordingID = id; progress = 0; resultText = ""
         #if COMPANION_DEVICE
-        guard let host = CloudASRHostSettings.normalize(CloudVoiceKeys.asrHost),
-              let key = CloudVoiceKeys.get(CloudASRHostSettings.service(for: host)) else { status = RecordingASRError.credentials.localizedDescription; return }
+        let endpoint = HermesCompanion.storedEndpoint
+        guard !endpoint.isEmpty, let token = HermesTokenVault.get(endpoint) else { status = RecordingASRError.credentials.localizedDescription; return }
         work = Task { @MainActor in
             defer { work = nil }
             var diagnostic: FileASRDiagnostic?
@@ -233,14 +159,16 @@ final class FileASRDiagnostic {
                 let decoder = Task.detached(priority: .userInitiated) { try RecordingPCMDecoder.decode(url, inputChannel: rightChannelOnly ? 1 : nil) }
                 let pcm = try await withTaskCancellationHandler { try await decoder.value } onCancel: { decoder.cancel() }
                 try Task.checkCancellation()
+                progress = 0.5
                 if captureDiagnostic {
                     let root = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                    diagnostic = try FileASRDiagnostic(root: root.appendingPathComponent("ManualASRDiagnosticsV1"), pcm: pcm, secret: key)
+                    diagnostic = try FileASRDiagnostic(root: root.appendingPathComponent("ManualASRDiagnosticsV1"), pcm: pcm, secret: "")
                     try diagnostic?.record("source", "recording=\(id.uuidString) decodedBytes=\(pcm.count) channel=\(rightChannelOnly ? "right-only" : "equal-weight-downmix")")
                 }
-                status = "手动转写中，音频正在发往阿里云…"
-                let text = try await FileASRClient.transcribe(pcm: pcm, key: key, host: host, diagnostic: diagnostic) { value in self.progress = value }
+                status = "转写中，音频已发给电脑桥接…"
+                let text = try await HermesFileASR.transcribe(pcm: pcm, endpoint: endpoint, token: token, diagnostic: diagnostic)
                 try Task.checkCancellation()
+                progress = 1
                 resultText = text
                 status = "保存新文字修订…"
                 guard await archive.saveTranscript(recordingID: id, text: text, title: String(("ASR · " + title).prefix(64))) != nil else {
@@ -250,7 +178,10 @@ final class FileASRDiagnostic {
             } catch is CancellationError { status = "已取消后续处理；原音频和已提交修订保留。" }
             catch {
                 try? diagnostic?.record("client-error", "domain=\((error as NSError).domain) code=\((error as NSError).code) description=\(error.localizedDescription)")
-                status = (error as? RecordingASRError)?.localizedDescription ?? "转写未完成，可能断网或已取消；原音频保留。"
+                status = (error as? HermesVoiceError)?.localizedDescription
+                    ?? (error as? HermesBridgeError)?.localizedDescription
+                    ?? (error as? RecordingASRError)?.localizedDescription
+                    ?? "转写未完成，可能断网或已取消；原音频保留。"
             }
         }
         #else
@@ -269,12 +200,12 @@ struct ManualRecordingASRView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("录音转文字").font(.headline)
-            Text("只有确认后才把这份本机音频发送给阿里云 ASR。按音频时长流式发送，可能计费；无需 DeepSeek，不自动总结。成功后新增文字修订，不覆盖原音频或旧稿。")
+            Text("只有确认后才把这份本机音频发送给你自己的电脑桥接（桥接内置豆包 ASR）；识别文字交给 Hermes，可能计费在桥接那一侧。成功后新增文字修订，不覆盖原音频或旧稿。")
                 .font(.caption).foregroundStyle(Palette.muted)
             Text("转写期间请保持 App 在前台；长时间后台完成尚未验收。").font(.caption2).foregroundStyle(Palette.muted)
-            Text("默认合并全部声道，再转为16kHz单声道；保留原始录音，不覆盖音频。").font(.caption2).foregroundStyle(Palette.muted)
+            Text("默认合并全部声道，再转为16kHz单声道并套标准 WAV 头；保留原始录音，不覆盖音频。单次上限约 4 分钟。").font(.caption2).foregroundStyle(Palette.muted)
             Toggle("仅下次保存 ASR 诊断", isOn: $captureDiagnostic).disabled(asr.busy).accessibilityIdentifier("manual-asr-diagnostic")
-            if captureDiagnostic { Text("将额外保存本次发送音频和服务端响应（可能含转录正文），仅存本机；不记录请求头或密钥。").font(.caption2) }
+            if captureDiagnostic { Text("将额外保存本次发送的音频和桥接响应（可能含转录正文），仅存本机；不记录请求头或密钥。").font(.caption2) }
             if captureDiagnostic {
                 Toggle("诊断：仅本次使用右声道", isOn: $rightChannelOnly).disabled(asr.busy).accessibilityIdentifier("manual-asr-right-channel")
             }
@@ -284,7 +215,7 @@ struct ManualRecordingASRView: View {
                 if asr.busy { ProgressView(value: asr.progress); Button("取消转写") { asr.cancel() } }
                 if !asr.resultText.isEmpty { Text(asr.resultText).font(.caption).textSelection(.enabled).privacySensitive() }
             } else if asr.busy { Text("另一份录音正在转写。完成后再试。").font(.caption) }
-        }.confirmationDialog("将这份录音发送到阿里云 ASR？可能计费，识别结果需要人工核对。", isPresented: $confirmation) {
+        }.confirmationDialog("将这份录音发送到电脑桥接识别？识别结果需要人工核对。", isPresented: $confirmation) {
             Button("确认上传并转文字") {
                 let capture = captureDiagnostic, right = captureDiagnostic && rightChannelOnly
                 captureDiagnostic = false; rightChannelOnly = false
