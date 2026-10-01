@@ -27,8 +27,8 @@ struct HermesCompanionView: View {
                     Text("电脑桥接").font(.headline)
                     TextField("HTTPS 地址", text: $endpoint).accessibilityIdentifier("hermes-endpoint")
                     SecureField("独立访问令牌（留空保留）", text: $token).privacySensitive().accessibilityIdentifier("hermes-token")
-                    Toggle("允许 DeepSeek 调用 Hermes 工具", isOn: $voiceTools).accessibilityIdentifier("hermes-voice-tools")
-                    Text("开启后，语音中的任务文字可能发送到此电脑及 Hermes。不会上传麦克风原始音频；不接管已有桌面任务。")
+                    Toggle("允许语音把任务交给 Hermes 工具", isOn: $voiceTools).accessibilityIdentifier("hermes-voice-tools")
+                    Text("开启后，语音识别出的任务文字可能发送到此电脑及 Hermes。音频只上传到你自己的桥接；不接管已有桌面任务。语音识别由桥接完成，不需要这里的模型密钥。")
                         .font(.caption).foregroundStyle(Palette.muted)
                     Button("保存配置，不启动任务") {
                         do { try hermes.save(endpoint: endpoint, token: token, voiceTools: voiceTools); token = "" }

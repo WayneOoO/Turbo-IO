@@ -258,7 +258,10 @@ struct HermesToolDescriptor: Identifiable {
     private let send: (String, String, String, Data?) async throws -> Data
     private var refreshing = false
     private var generation = UUID()
-    private let prefix = "companion.hermes.v1."
+    /// 语音入口与手动转写共用同一份桥接配置，不新建第二份存储。
+    static let storagePrefix = "companion.hermes.v1."
+    static var storedEndpoint: String { UserDefaults.standard.string(forKey: storagePrefix + "endpoint") ?? "" }
+    private let prefix = HermesCompanion.storagePrefix
     var selected: HermesTask? { state?.tasks.first { $0.id == selectedTaskID } }
     var configured: Bool { !endpoint.isEmpty && key(endpoint) != nil }
     var canStop: Bool { selected?.running == true }
@@ -357,6 +360,16 @@ struct HermesToolDescriptor: Identifiable {
             selectedSessionID = sessionId; defaults.set(sessionId, forKey: prefix + "session")
         }
         return taskId
+    }
+    /// 语音入口返回的任务号：只记本地选中与续聊会话，不发任何请求。
+    /// 后续进度与回答仍走既有的 GET /v1/hermes/state 轮询，不新造轮询。
+    func adoptVoiceTask(taskId: String, sessionId: String?) {
+        guard !busy, !hasUnknownDelivery, !taskId.isEmpty, taskId.utf8.count <= 64 else { return }
+        selectedTaskID = taskId; defaults.set(taskId, forKey: prefix + "selected")
+        if let sessionId, !sessionId.isEmpty, sessionId.utf8.count <= 128 {
+            selectedSessionID = sessionId; defaults.set(sessionId, forKey: prefix + "session")
+        }
+        status = "语音任务已提交；进度与回答从电脑桥接读取"
     }
     func stop(requestID: String = UUID().uuidString) async throws {
         guard let id = selectedTaskID else { throw HermesBridgeError.rejected("no_selected_task") }
