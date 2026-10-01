@@ -85,14 +85,14 @@ struct ModelToolsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 Card {
-                    Label("DeepSeek 的工具清单", systemImage: "wrench.and.screwdriver").font(.headline)
+                    Label("交给 Hermes 的工具清单", systemImage: "wrench.and.screwdriver").font(.headline)
                     Text("当前配置将提供 \(providedNames.count) / \(HermesToolDescriptor.all.count) 个工具")
                         .accessibilityIdentifier("model-tools-count")
-                    Text("这是下次模型请求可携带的 tools，不代表已经发出请求、工具执行成功或电脑在线。页面只读，不会启动任务。")
+                    Text("这些定义只在「Hermes 任务」页提交任务时使用；语音识别已内置在电脑桥接，App 不再把工具定义发给本机模型。页面只读，不会启动任务。")
                         .font(.caption).foregroundStyle(Palette.muted)
                     Text(hermes.configured ? (hermes.voiceToolsEnabled ? "工具权限：已允许" : "工具权限：已关闭") : "工具配置：缺少桥接地址或令牌")
                         .font(.caption).accessibilityIdentifier("model-tools-configuration")
-                    Text(runtime.supportsDevice ? "语音：\(runtime.phaseLabel) · \(runtime.cloud ? "云对话" : "云对话未运行")" : "模拟器：仅查看清单，不运行眼镜语音")
+                    Text(runtime.supportsDevice ? "语音：\(runtime.phaseLabel) · \(runtime.cloud ? "桥接识别" : "桥接识别未运行")" : "模拟器：仅查看清单，不运行眼镜语音")
                         .font(.caption)
                     Text("桥接状态（上次检查 / 配置结果）：\(hermes.status)").font(.caption)
                         .accessibilityIdentifier("model-tools-bridge-state")
@@ -400,7 +400,7 @@ struct HelpView: View {
         ("哪些还不是正式能力？", "真实蓝牙连接、独立认证、语音采集与识别、模型调用、TTS、镜片显示、反向事件、NAS 自动归档。界面不会将这些显示为成功。"),
         ("我的录音保存在哪里？", "新归档在Turbo IO自己沙盒的 Documents/VerifiedRecordingArchiveV1。旧 ImportedRecordings 保留原位，只有逐条确认才复制进新档。来源不修改，不自动播放、识别或上传。"),
         ("演示会改变眼镜吗？", "不会。演示只是手机侧的可视化与纯逻辑实验；顶部持续显示演示标识。退出应用后默认回到真实未连接状态。"),
-        ("怎么接入自己的模型？", "真机语音页使用已验收的阿里云 ASR 与 DeepSeek Flash，在语音服务密钥页配置后明确开启待命。其他模型设置仍是独立草稿，不会改变实际语音服务。"),
+        ("怎么接入自己的模型？", "语音识别已内置在电脑桥接（豆包 ASR），App 里不需要任何语音密钥；先在「Hermes 任务」页保存桥接地址与令牌，再开启语音待命。执行与回答都由那一侧的 Hermes 完成。"),
         ("为什么没有重置或升级按钮？", "研究版不会为了界面完整加入危险操作。必须等协议、恢复路径和目标设备被核实后，才会开放有确认步骤的控制。"),
         ("如何判断真正打通？", "代码测试、手机运行、眼镜实际显示与反向操作分别验收。最终还要在使用自有签名的非越狱 iPhone 上完整验证。")
     ]
