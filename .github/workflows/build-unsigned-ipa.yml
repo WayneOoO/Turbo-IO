@@ -47,7 +47,12 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_ENTITLEMENTS="" \
-            build
+            build > build.log 2>&1 || { 
+            echo "=== LOG TAIL ==="; tail -45 build.log; 
+            echo "=== ERRORS ==="; grep -n -i "error:" build.log | head -25; 
+            echo "=== FAILED CMDS ==="; grep -A5 "The following build commands failed" build.log | head -20; 
+            exit 1; }
+          tail -3 build.log
 
       - name: Package unsigned IPA
         working-directory: apps/RayNeoCompanion
