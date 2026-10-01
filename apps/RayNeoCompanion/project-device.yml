@@ -62,7 +62,7 @@ targets:
             LSHandlerRank: Alternate
             LSItemContentTypes: [org.idpf.epub-container, public.plain-text]
         LSSupportsOpeningDocumentsInPlace: true
-        NSLocalNetworkUsageDescription: 连接你指定的电脑Codex桥接服务，发送任务并获取结果。
+        NSLocalNetworkUsageDescription: 连接你指定的电脑 Hermes 桥接服务，发送任务并获取结果。
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
   RayNeoCompanionUITests:
@@ -139,7 +139,7 @@ targets:
       path: Generated/CompanionDevice-Info.plist
       properties:
         CFBundleDisplayName: Turbo IO
-        NSLocalNetworkUsageDescription: 连接你指定的电脑Codex桥接服务，发送任务并获取结果。
+        NSLocalNetworkUsageDescription: 连接你指定的电脑 Hermes 桥接服务，发送任务并获取结果。
         NSRemindersUsageDescription: 读取你选择的系统提醒事项并复制为Turbo IO本机待办。不会修改或删除系统提醒事项。
         NSRemindersFullAccessUsageDescription: 读取你选择的系统提醒事项并复制为Turbo IO本机待办。虽然系统授权为完全访问，Turbo IO仅执行读取。
         UILaunchScreen: {}
