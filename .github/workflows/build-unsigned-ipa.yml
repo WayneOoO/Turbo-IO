@@ -47,7 +47,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_ENTITLEMENTS="" \
-            build | tail -40
+            build
 
       - name: Package unsigned IPA
         working-directory: apps/RayNeoCompanion
