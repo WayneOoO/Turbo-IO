@@ -15,9 +15,9 @@ struct ToolsView: View {
             NavigationLink { ModelToolsView() } label: {
                 Card { FeatureRow(icon: "wrench.and.screwdriver", title: "AI Tools", subtitle: "模型工具 · 参数 · 可用条件", status: "查看") }
             }.buttonStyle(.plain).accessibilityIdentifier("model-tools-entry")
-            NavigationLink { CodexCompanionView() } label: {
-                Card { FeatureRow(icon: "terminal", title: "Codex 控制台", subtitle: "电脑任务 · 进度 · 单次审批", status: "连接电脑") }
-            }.buttonStyle(.plain).accessibilityIdentifier("codex-tool")
+            NavigationLink { HermesCompanionView() } label: {
+                Card { FeatureRow(icon: "terminal", title: "Hermes 控制台", subtitle: "电脑任务 · 真实步骤 · 会话续聊", status: "连接电脑") }
+            }.buttonStyle(.plain).accessibilityIdentifier("hermes-tool")
             Card {
                 NavigationLink { TodoView() } label: {
                     FeatureRow(icon: "checklist", title: "待办清单", subtitle: "记录与管理任务", status: "本地可用", active: true)
@@ -74,36 +74,36 @@ struct ToolsView: View {
 }
 
 struct ModelToolsView: View {
-    @EnvironmentObject private var codex: CodexCompanion
+    @EnvironmentObject private var hermes: HermesCompanion
     @EnvironmentObject private var runtime: CompanionVoiceRuntime
     @State private var refreshing = false
     @State private var expandedTools: Set<String> = []
     private var providedNames: Set<String> {
-        Set(codex.toolDefinitions.compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
+        Set(hermes.toolDefinitions.compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
     }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 Card {
                     Label("DeepSeek 的工具清单", systemImage: "wrench.and.screwdriver").font(.headline)
-                    Text("当前配置将提供 \(providedNames.count) / \(CodexToolDescriptor.all.count) 个工具")
+                    Text("当前配置将提供 \(providedNames.count) / \(HermesToolDescriptor.all.count) 个工具")
                         .accessibilityIdentifier("model-tools-count")
                     Text("这是下次模型请求可携带的 tools，不代表已经发出请求、工具执行成功或电脑在线。页面只读，不会启动任务。")
                         .font(.caption).foregroundStyle(Palette.muted)
-                    Text(codex.configured ? (codex.voiceToolsEnabled ? "工具权限：已允许" : "工具权限：已关闭") : "工具配置：缺少桥接地址或令牌")
+                    Text(hermes.configured ? (hermes.voiceToolsEnabled ? "工具权限：已允许" : "工具权限：已关闭") : "工具配置：缺少桥接地址或令牌")
                         .font(.caption).accessibilityIdentifier("model-tools-configuration")
                     Text(runtime.supportsDevice ? "语音：\(runtime.phaseLabel) · \(runtime.cloud ? "云对话" : "云对话未运行")" : "模拟器：仅查看清单，不运行眼镜语音")
                         .font(.caption)
-                    Text("桥接状态（上次检查 / 配置结果）：\(codex.status)").font(.caption)
+                    Text("桥接状态（上次检查 / 配置结果）：\(hermes.status)").font(.caption)
                         .accessibilityIdentifier("model-tools-bridge-state")
                     Button(refreshing ? "正在检查…" : "检查桥接连接（不发任务）") {
                         refreshing = true
-                        Task { await codex.refresh(); refreshing = false }
-                    }.disabled(!codex.configured || refreshing).accessibilityIdentifier("model-tools-refresh")
-                    NavigationLink("管理 Codex 工具开关与连接") { CodexCompanionView() }
+                        Task { await hermes.refresh(); refreshing = false }
+                    }.disabled(!hermes.configured || refreshing).accessibilityIdentifier("model-tools-refresh")
+                    NavigationLink("管理 Hermes 工具开关与连接") { HermesCompanionView() }
                         .accessibilityIdentifier("model-tools-configure")
                 }
-                ForEach(CodexToolDescriptor.all) { tool in
+                ForEach(HermesToolDescriptor.all) { tool in
                     Card {
                         Text(tool.title).font(.headline)
                         Text(tool.id).font(.system(.subheadline, design: .monospaced)).textSelection(.enabled)
@@ -131,7 +131,7 @@ struct ModelToolsView: View {
                         }
                     }
                 }
-                Text("当前使用 Function Calling，并非 MCP。待办、天气、录音等 App 功能尚未注册为模型工具；权限审批仍须在手机明确确认，没有自动批准工具。")
+                Text("当前使用 Function Calling，并非 MCP。待办、天气、录音等 App 功能尚未注册为模型工具；Hermes 工具只提交任务与查询进度，回复本身不会自动执行命令，也没有审批环节。")
                     .font(.caption).foregroundStyle(Palette.muted).accessibilityIdentifier("model-tools-boundary")
             }.padding(22)
         }.background(Palette.background).navigationTitle("AI Tools").navigationBarTitleDisplayMode(.inline)

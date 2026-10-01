@@ -40,9 +40,9 @@ struct ConversationView: View {
                 Spacer()
                 Button("本地流程演示") { showSimulation = true }.accessibilityIdentifier("open-session-lab")
             }.font(.subheadline)
-            NavigationLink { CodexCompanionView() } label: {
-                Label("Codex 任务与审批", systemImage: "terminal")
-            }.accessibilityIdentifier("codex-conversation-entry")
+            NavigationLink { HermesCompanionView() } label: {
+                Label("Hermes 任务", systemImage: "terminal")
+            }.accessibilityIdentifier("hermes-conversation-entry")
             NavigationLink { ModelToolsView() } label: {
                 Label("AI Tools · 查看模型可用工具", systemImage: "wrench.and.screwdriver")
             }.accessibilityIdentifier("model-tools-conversation-entry")
@@ -58,7 +58,7 @@ struct ConversationView: View {
                 Divider().overlay(Palette.line)
                 FeatureRow(icon: "bolt", title: "DeepSeek V4 Flash", subtitle: "关闭思考 · 流式文字 · 不默认联网搜索", status: "原型已验")
                 Divider().overlay(Palette.line)
-                Text("持续 ASR 在唤醒会话内保持，云端出现有效新句才打断旧回答；空句不打断。单次会话保留 120 秒保护。Codex 工具需单独配置和允许；当前无 TTS。")
+                Text("持续 ASR 在唤醒会话内保持，云端出现有效新句才打断旧回答；空句不打断。单次会话保留 120 秒保护。Hermes 工具需单独配置和允许；当前无 TTS。")
                     .font(.caption).foregroundStyle(Palette.muted)
             }
             if runtime.supportsDevice {
