@@ -29,6 +29,19 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Build RayneoNet declaration module
+        run: |
+          set -e
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p core-probe/RecoveredInterface/build/RayneoNet.swiftmodule
+          xcrun swiftc -emit-module -parse-as-library \
+            -module-name RayneoNet \
+            -target arm64-apple-ios16.0 \
+            -sdk "$SDK" \
+            core-probe/RecoveredInterface/RayneoNet.swift \
+            -emit-module-path core-probe/RecoveredInterface/build/RayneoNet.swiftmodule/arm64-apple-ios.swiftmodule
+          ls -la core-probe/RecoveredInterface/build/RayneoNet.swiftmodule
+
       - name: Generate Xcode project
         working-directory: apps/RayNeoCompanion
         run: xcodegen generate --spec project-device.yml
