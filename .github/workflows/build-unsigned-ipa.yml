@@ -1,0 +1,75 @@
+# 云端编译「无签名 IPA」——给 Turbo IO 的 RayNeoCompanion 用
+# 用法：把本文件放到 fork 仓库的 .github/workflows/build-unsigned-ipa.yml，
+# 然后在 Actions 页面点 “Run workflow”，跑完在 Artifacts 里下载 .ipa。
+# 说明：这里只编译、不签名（CODE_SIGNING_ALLOWED=NO），签名交给本机 Sideloadly 用你的 Apple ID 完成。
+name: Build unsigned IPA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-unsigned-ipa.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: apps/RayNeoCompanion
+        run: xcodegen generate --spec project-device.yml
+
+      - name: Build for device (no signing)
+        working-directory: apps/RayNeoCompanion
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project RayNeoCompanion.xcodeproj \
+            -scheme RayNeoCompanionDevice \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            build | tail -40
+
+      - name: Package unsigned IPA
+        working-directory: apps/RayNeoCompanion
+        run: |
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
+          echo "app = $APP"
+          test -n "$APP"
+          rm -rf out && mkdir -p out/Payload
+          cp -R "$APP" out/Payload/
+          cd out && zip -qry RayNeoCompanion-unsigned.ipa Payload
+          ls -la
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: RayNeoCompanion-unsigned-ipa
+          path: apps/RayNeoCompanion/out/RayNeoCompanion-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Publish IPA as public release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ipa-${{ github.run_number }}
+          name: RayNeoCompanion unsigned IPA
+          files: apps/RayNeoCompanion/out/RayNeoCompanion-unsigned.ipa
