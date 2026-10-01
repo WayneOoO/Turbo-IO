@@ -1,14 +1,16 @@
-# 云端编译「无签名 IPA」——给 Turbo IO 的 RayNeoCompanion 用
+# 云端编译「无签名 IPA」——给 Turbo IO 的 RayNeoCompanion 用（Hermes 定制版）
 # 用法：把本文件放到 fork 仓库的 .github/workflows/build-unsigned-ipa.yml，
-# 然后在 Actions 页面点 “Run workflow”，跑完在 Artifacts 里下载 .ipa。
-# 说明：这里只编译、不签名（CODE_SIGNING_ALLOWED=NO），签名交给本机 Sideloadly 用你的 Apple ID 完成。
+#       把 .hermes-rebrand.py 放到仓库根目录，push 即触发。
+# 说明：只编译、不签名（CODE_SIGNING_ALLOWED=NO），签名交给本机 Sideloadly 用你的 Apple ID 完成。
 name: Build unsigned IPA
 
 on:
   push:
     branches: [main]
     paths:
+      - 'apps/RayNeoCompanion/**'
       - '.github/workflows/build-unsigned-ipa.yml'
+      - '.hermes-rebrand.py'
   workflow_dispatch:
 
 permissions:
@@ -28,6 +30,9 @@ jobs:
 
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      - name: Rebrand client from Codex to Hermes
+        run: python3 .hermes-rebrand.py
 
       - name: Build RayneoNet declaration module
         run: |
@@ -89,5 +94,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ipa-${{ github.run_number }}
-          name: RayNeoCompanion unsigned IPA
+          name: RayNeoCompanion unsigned IPA (Hermes build)
           files: apps/RayNeoCompanion/out/RayNeoCompanion-unsigned.ipa
