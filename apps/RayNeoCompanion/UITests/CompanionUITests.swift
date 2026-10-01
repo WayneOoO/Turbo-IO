@@ -24,13 +24,13 @@ final class CompanionUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["model-tools-count"].label.contains("0 / 3"))
         XCTAssertFalse(app.buttons["model-tools-refresh"].isEnabled)
         capture("52-model-tools-offline-summary")
-        for name in ["codex_message", "codex_status", "codex_stop"] {
+        for name in ["hermes_ask", "hermes_status", "hermes_stop"] {
             let title = app.staticTexts["model-tool-name-" + name]
             reveal(title, in: app); XCTAssertEqual(title.label, name)
         }
-        let details = app.buttons["model-tool-details-codex_stop"]
+        let details = app.buttons["model-tool-details-hermes_stop"]
         reveal(details, in: app); details.tap()
-        let schema = app.staticTexts["model-tool-schema-codex_stop"]
+        let schema = app.staticTexts["model-tool-schema-hermes_stop"]
         XCTAssertTrue(schema.waitForExistence(timeout: 5))
         XCTAssertTrue(schema.label.contains("additionalProperties"))
         reveal(schema, in: app)
@@ -44,19 +44,19 @@ final class CompanionUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["model-tools-count"].label.contains("0 / 3"))
     }
 
-    func testCodexConsoleHasOfflineFixtureAndNoImplicitExecution() {
+    func testHermesConsoleHasOfflineFixtureAndNoImplicitExecution() {
         let app = XCUIApplication(); app.launchArguments = testArguments + ["--ui-tab", "3"]; app.launch()
-        let entry = app.buttons["codex-tool"]; reveal(entry, in: app); entry.tap()
-        XCTAssertTrue(app.textFields["codex-endpoint"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["codex-refresh"].isEnabled)
-        let fixture = app.buttons["codex-fixture"]; reveal(fixture, in: app); fixture.tap()
-        let field = app.descendants(matching: .any).matching(identifier: "codex-prompt").firstMatch
+        let entry = app.buttons["hermes-tool"]; reveal(entry, in: app); entry.tap()
+        XCTAssertTrue(app.textFields["hermes-endpoint"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["hermes-refresh"].isEnabled)
+        let fixture = app.buttons["hermes-fixture"]; reveal(fixture, in: app); fixture.tap()
+        let field = app.descendants(matching: .any).matching(identifier: "hermes-prompt").firstMatch
         let first = field.value as? String
         fixture.tap()
         XCTAssertNotNil(first)
         XCTAssertNotEqual(first, field.value as? String)
-        XCTAssertFalse(app.buttons["codex-send"].isEnabled)
-        capture("48-codex-console-offline-fixture")
+        XCTAssertFalse(app.buttons["hermes-send"].isEnabled)
+        capture("48-hermes-console-offline-fixture")
     }
 
     func testAutomaticWeatherDefaultsToBeijingAndPersistsOffWithoutNetwork() {
