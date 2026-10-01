@@ -1,0 +1,98 @@
+# 云端编译「无签名 IPA」——给 Turbo IO 的 RayNeoCompanion 用（Hermes 定制版）
+# 用法：把本文件放到 fork 仓库的 .github/workflows/build-unsigned-ipa.yml，
+#       把 .hermes-rebrand.py 放到仓库根目录，push 即触发。
+# 说明：只编译、不签名（CODE_SIGNING_ALLOWED=NO），签名交给本机 Sideloadly 用你的 Apple ID 完成。
+name: Build unsigned IPA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/RayNeoCompanion/**'
+      - '.github/workflows/build-unsigned-ipa.yml'
+      - '.hermes-rebrand.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Rebrand client from Codex to Hermes
+        run: python3 .hermes-rebrand.py
+
+      - name: Build RayneoNet declaration module
+        run: |
+          set -e
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p core-probe/RecoveredInterface/build/RayneoNet.swiftmodule
+          xcrun swiftc -emit-module -parse-as-library \
+            -module-name RayneoNet \
+            -target arm64-apple-ios16.0 \
+            -sdk "$SDK" \
+            core-probe/RecoveredInterface/RayneoNet.swift \
+            -emit-module-path core-probe/RecoveredInterface/build/RayneoNet.swiftmodule/arm64-apple-ios.swiftmodule
+          ls -la core-probe/RecoveredInterface/build/RayneoNet.swiftmodule
+
+      - name: Generate Xcode project
+        working-directory: apps/RayNeoCompanion
+        run: xcodegen generate --spec project-device.yml
+
+      - name: Build for device (no signing)
+        working-directory: apps/RayNeoCompanion
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project RayNeoCompanion.xcodeproj \
+            -scheme RayNeoCompanionDevice \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            build > build.log 2>&1 || { 
+            echo "=== LOG TAIL ==="; tail -45 build.log; 
+            echo "=== ERRORS ==="; grep -n -i "error:" build.log | head -25; 
+            echo "=== FAILED CMDS ==="; grep -A5 "The following build commands failed" build.log | head -20; 
+            exit 1; }
+          tail -3 build.log
+
+      - name: Package unsigned IPA
+        working-directory: apps/RayNeoCompanion
+        run: |
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
+          echo "app = $APP"
+          test -n "$APP"
+          rm -rf out && mkdir -p out/Payload
+          cp -R "$APP" out/Payload/
+          cd out && zip -qry RayNeoCompanion-unsigned.ipa Payload
+          ls -la
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: RayNeoCompanion-unsigned-ipa
+          path: apps/RayNeoCompanion/out/RayNeoCompanion-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Publish IPA as public release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ipa-${{ github.run_number }}
+          name: RayNeoCompanion unsigned IPA (Hermes build)
+          files: apps/RayNeoCompanion/out/RayNeoCompanion-unsigned.ipa
