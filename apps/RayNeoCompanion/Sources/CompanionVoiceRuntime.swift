@@ -9,7 +9,9 @@ import Combine
     @Published private(set) var answer = ""
     @Published private(set) var transcriptFinal = false
     @Published private(set) var modelComplete = false
-    @Published private(set) var hasCredentials = false
+    @Published private(set) var bridgeReady = false
+    @Published private(set) var voiceTaskID: String?
+    @Published private(set) var voiceStatus = ""
     @Published private(set) var continuous = false
     @Published private(set) var cloud = false
     @Published private(set) var latestEvent = "尚未加载设备通信核心"
@@ -49,7 +51,7 @@ import Combine
         controller.companionCancelFile(task)
         #endif
     }
-    init(timeline: ConversationTimeline? = nil) { self.timeline = timeline }
+    init(timeline: ConversationTimeline? = nil) { self.timeline = timeline; HermesVoiceHub.shared.attach(self) }
     deinit {
         #if COMPANION_DEVICE
         poll?.invalidate()
@@ -73,12 +75,9 @@ import Combine
     func prepare() {
         #if COMPANION_DEVICE
         guard poll == nil else { refresh(); return }
+        // 语音识别已内置在电脑桥接：不再把工具定义交给设备侧模型，也不再需要本机密钥。
+        HermesVoiceHub.shared.attach(self)
         controller.companionBusiness = { [weak self] in self?.onBusiness?($0,$1,$2) }
-        controller.companionTools = { [weak self] in self?.hermes?.toolDefinitions ?? [] }
-        controller.companionExecuteTool = { [weak self] name, arguments, id in
-            guard let hermes = self?.hermes else { return "Hermes 工具未配置，未执行。" }
-            return await hermes.executeTool(name: name, arguments: arguments, requestID: id)
-        }
         controller.companionBusinessLoss = { [weak self] in self?.onBusinessLoss?() }
         controller.companionLog = { [weak self] line in self?.latestEvent = String(line.prefix(200)) }
         controller.companionTranscript = { [weak self] id, text, final in
@@ -114,7 +113,7 @@ import Combine
     func refresh() {
         #if COMPANION_DEVICE
         ready = controller.companionReady; enabled = controller.companionEnabled
-        phase = controller.companionPhase; hasCredentials = CloudVoiceKeys.ready
+        phase = controller.companionPhase; bridgeReady = hermes?.configured == true
         DisplayObservation.shared.connection(ready, phase:phase)
         if ["disabled", "waitingForConnection", "idle"].contains(phase) { finishTimelineTurn() }
         continuous = controller.companionContinuous; cloud = controller.companionCloud
@@ -143,7 +142,7 @@ import Combine
         #if COMPANION_DEVICE
         prepare()
         guard controller.companionStart(cloud: cloud, continuous: continuous) else {
-            error = "需要唯一已认证的眼镜；云对话还需要本 App 的两项密钥。"; refresh(); return
+            error = "需要唯一已认证的眼镜；语音识别要用「Hermes 任务」页保存的桥接地址与令牌。"; refresh(); return
         }
         refresh()
         #endif
@@ -155,26 +154,53 @@ import Combine
     }
     func endRound() {
         #if COMPANION_DEVICE
+        HermesVoiceHub.shared.finish()   // 收尾：先把攒下的音频交出去，再关本轮
         controller.companionEndRound(); refresh()
         #endif
     }
-    func saveKeys(asr: String, llm: String, host: String, enableDefault: Bool = false) -> Bool {
-        #if COMPANION_DEVICE
-        guard !enabled else { error = "请先关闭待命，再修改云端凭据。"; return false }
-        guard let target = CloudASRHostSettings.normalize(host) else { error = "请填写自己的阿里云 ASR 主机名（aliyuncs.com），不含协议、路径或端口。"; return false }
-        let service = CloudASRHostSettings.service(for: target)
-        let a = asr.isEmpty ? CloudVoiceKeys.get(service) != nil : CloudVoiceKeys.save(asr, service: service)
-        let b = llm.isEmpty ? CloudVoiceKeys.get(CloudVoiceKeys.llmService) != nil : CloudVoiceKeys.save(llm, service: CloudVoiceKeys.llmService)
-        if a && b {
-            CloudASRHostSettings.save(target)
-            if enableDefault { controller.companionEnableDefaultCloudVoice() }
+    /// 一轮语音收齐后由 HermesVoiceHub 调用：音频发给电脑桥接，原话回填对话流。
+    /// 本机不再有 ASR 与模型；Hermes 的回答由「Hermes 任务」页的既有轮询显示。
+    func deliverVoiceRound(pcm: Data) async {
+        guard let hermes, hermes.configured else {
+            failVoice("语音识别失败（bridge_unconfigured）：先到「Hermes 任务」页保存桥接地址与令牌。")
+            return
         }
-        refresh()
-        if !a || !b { error = "密钥未完整保存；没有启用云上传。" }
-        return a && b
-        #else
-        error = "模拟器不保存真机语音凭据。"; return false
-        #endif
+        let endpoint = hermes.endpoint
+        guard let token = HermesTokenVault.get(endpoint) else {
+            failVoice(HermesVoiceError.missingKey.localizedDescription)
+            return
+        }
+        endRound()
+        voiceStatus = "音频已发给电脑桥接，正在识别…"
+        let turn = UUID()
+        finishTimelineTurn(); activeTurn = turn
+        do {
+            let result = try await HermesVoiceClient.send(pcm: pcm, sampleRate: HermesVoiceAudio.sampleRate,
+                                                          endpoint: endpoint, token: token)
+            let text = String(result.text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(2000))
+            transcript = text; transcriptFinal = true
+            timeline?.record(ConversationEvent(id: turn, kind: .transcript, text: text, final: true))
+            voiceTaskID = result.taskId.flatMap { $0.isEmpty ? nil : $0 }
+            if let taskId = voiceTaskID {
+                hermes.adoptVoiceTask(taskId: taskId, sessionId: result.sessionId)
+                voiceStatus = "已交给 Hermes · 任务 " + String(taskId.prefix(8)) + "（进度与回答在「Hermes 任务」页）"
+                timeline?.record(ConversationEvent(id: turn, kind: .answerDelta,
+                    text: "已提交 Hermes 任务 " + String(taskId.prefix(8)) + "；回答在「Hermes 任务」页随轮询显示。"))
+            } else {
+                voiceStatus = "识别完成，但桥接没有返回任务号；请在「Hermes 任务」页核对。"
+            }
+        } catch let failure {
+            let reason = (failure as? HermesVoiceError)?.localizedDescription
+                ?? (failure as? HermesBridgeError)?.localizedDescription
+                ?? "语音识别失败（request_failed）"
+            failVoice(reason)
+        }
+    }
+    /// 失败一律出声：屏幕上一句人话 + 既有弹窗，不静默、不崩。
+    private func failVoice(_ reason: String) {
+        voiceTaskID = nil
+        voiceStatus = reason
+        error = reason
     }
     func clearText() { transcript = ""; answer = ""; transcriptFinal = false; modelComplete = false }
     private func finishTimelineTurn() {
