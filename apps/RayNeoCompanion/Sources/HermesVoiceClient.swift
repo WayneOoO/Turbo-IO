@@ -144,6 +144,8 @@ final class HermesVoiceHub: @unchecked Sendable {
     private var buffer = Data()
     private var silence = 0
     private var voiced = false
+    /// 正在投递（识别请求在飞）：这段时间里的尾包直接丢，避免同一句话被交两次。
+    private var deliverInFlight = false
     var enabled: Bool { runtime != nil }
     var pendingBytes: Int { buffer.count }
 
@@ -159,13 +161,18 @@ final class HermesVoiceHub: @unchecked Sendable {
         if voiced, silence >= Self.silenceFrames, buffer.count >= Self.minimumBytes { finish() }
     }
 
-    /// 取走本轮音频并交给运行时发送；没有音频时什么都不做。
+    /// 取走本轮音频并交给运行时发送；没有音频、或上一轮还在投递时什么都不做。
     func finish() {
-        guard !buffer.isEmpty else { return }
+        guard !buffer.isEmpty, !deliverInFlight else { return }
         let payload = buffer
         buffer = Data(); silence = 0; voiced = false
         guard payload.count >= Self.minimumBytes else { return }
-        let runtime = self.runtime
-        Task { @MainActor in await runtime?.deliverVoiceRound(pcm: payload) }
+        guard let runtime = self.runtime else { return }
+        // 投递期间（收音已停、识别在飞）到达的尾包不算新一轮：同一句话只交一次。
+        deliverInFlight = true
+        Task { @MainActor in
+            await runtime.deliverVoiceRound(pcm: payload)
+            self.deliverInFlight = false
+        }
     }
 }
