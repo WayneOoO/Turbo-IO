@@ -168,6 +168,32 @@ final class ProbeController: UIViewController, CBCentralManagerDelegate, StreamD
         log("恢复用户默认语音待命；仅唤醒后采音，已绑定目标自动重连")
     }
     func companionEndRound() { voiceProbe.standby.cancelCurrentRound() }
+    // Hermes 版：把电脑桥接的回答接回设备侧「回答下发」链路（StandbyVoiceSession → type32/type12）。
+    var companionAnswerRoundID: UUID? { voiceProbe.standby.cloudRoundID }
+    /// 把本轮切到「等待回答」；返回本轮 roundID，nil = 当前开不了轮（未开启云模式/未连接/发送失败）。
+    func companionBeginAnswerRound(query: String) -> UUID? {
+        voiceProbe.standby.beginAnswerRound(query: query, now: ProcessInfo.processInfo.systemUptime)
+    }
+    /// 补「问题」栏：识别原话（≤512 字节）。
+    func companionSetAnswerQuery(_ text: String) { voiceProbe.standby.setAnswerQuery(text) }
+    /// 等 Hermes 期间给设备侧看门狗续命（持续收声模式：5 秒无音频 / 120 秒会话）。
+    func companionKeepAnswerRoundAlive() {
+        voiceProbe.standby.keepAnswerRoundAlive(now: ProcessInfo.processInfo.systemUptime)
+    }
+    /// 逐片下发回答（每片 ≤512 字节，末片 isFinal:true 触发 type12）；
+    /// 返回 false = 本轮已被取消/替换/写满，别再推。
+    func companionPushAnswer(_ text: String, isFinal: Bool) -> Bool {
+        let standby = voiceProbe.standby
+        guard let id = standby.cloudRoundID else { return false }
+        let before = standby.answerByteCount
+        standby.cloudText(text, final: isFinal, id: id, now: ProcessInfo.processInfo.systemUptime)
+        if isFinal { return standby.phase != .processing }   // 写成功即进入 displaying（type12 已提交）
+        return standby.cloudRoundID == id && standby.answerByteCount > before
+    }
+    /// 放弃本轮回答（等价云端失败）：退出本轮，不伪造回答。
+    func companionAnswerFailed() {
+        if let id = voiceProbe.standby.cloudRoundID { voiceProbe.standby.cloudFailed(id: id) }
+    }
     #endif
 
     override func viewDidLoad() {
