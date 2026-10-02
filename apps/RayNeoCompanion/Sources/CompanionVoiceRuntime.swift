@@ -19,6 +19,10 @@ import Combine
     private let timeline: ConversationTimeline?
     weak var hermes: HermesCompanion?
     private var activeTurn: UUID?
+    /// 眼镜屏回答回显：本轮设备侧轮次号 + 「同一个任务只推一次」的记账。
+    private var answerRound: UUID?
+    private var answerWatch: Task<Void, Never>?
+    private var pushedAnswerTaskIDs: [String] = []
     var onBusiness: ((String, UInt8, Data) -> Void)?
     var onBusinessLoss: (() -> Void)?
     var featureIsBusy: (() -> Bool)?
@@ -55,6 +59,7 @@ import Combine
     deinit {
         #if COMPANION_DEVICE
         poll?.invalidate()
+        answerWatch?.cancel()
         #endif
     }
     #if COMPANION_DEVICE
@@ -149,11 +154,13 @@ import Combine
     }
     func stop() {
         #if COMPANION_DEVICE
+        cancelAnswerWatch()
         controller.companionStop(); refresh()
         #endif
     }
     func endRound() {
         #if COMPANION_DEVICE
+        cancelAnswerWatch()
         HermesVoiceHub.shared.finish()   // 收尾：先把攒下的音频交出去，再关本轮
         controller.companionEndRound(); refresh()
         #endif
@@ -170,7 +177,8 @@ import Combine
             failVoice(HermesVoiceError.missingKey.localizedDescription)
             return
         }
-        endRound()
+        // 设备侧本轮不结束：先切到「等待回答」，Hermes 跑完再把回答当云端文本下发到眼镜。
+        beginAnswerRound()
         voiceStatus = "音频已发给电脑桥接，正在识别…"
         let turn = UUID()
         finishTimelineTurn(); activeTurn = turn
@@ -182,18 +190,24 @@ import Combine
             timeline?.record(ConversationEvent(id: turn, kind: .transcript, text: text, final: true))
             voiceTaskID = result.taskId.flatMap { $0.isEmpty ? nil : $0 }
             if let taskId = voiceTaskID {
+                #if COMPANION_DEVICE
+                controller.companionSetAnswerQuery(text)   // 眼镜屏「问题」栏 = 识别原话
+                #endif
                 hermes.adoptVoiceTask(taskId: taskId, sessionId: result.sessionId)
                 voiceStatus = "已交给 Hermes · 任务 " + String(taskId.prefix(8)) + "（进度与回答在「Hermes 任务」页）"
                 timeline?.record(ConversationEvent(id: turn, kind: .answerDelta,
                     text: "已提交 Hermes 任务 " + String(taskId.prefix(8)) + "；回答在「Hermes 任务」页随轮询显示。"))
+                watchAnswer(taskId: taskId)
             } else {
                 voiceStatus = "识别完成，但桥接没有返回任务号；请在「Hermes 任务」页核对。"
+                await closeAnswerRoundWith("已识别，但电脑桥接没有返回任务号，回答无法上屏。")
             }
         } catch let failure {
             let reason = (failure as? HermesVoiceError)?.localizedDescription
                 ?? (failure as? HermesBridgeError)?.localizedDescription
                 ?? "语音识别失败（request_failed）"
             failVoice(reason)
+            await closeAnswerRoundWith("语音识别失败，本轮没有提交任务。")
         }
     }
     /// 失败一律出声：屏幕上一句人话 + 既有弹窗，不静默、不崩。
@@ -201,6 +215,115 @@ import Combine
         voiceTaskID = nil
         voiceStatus = reason
         error = reason
+    }
+
+    // MARK: - 眼镜屏回答回显（Hermes 任务跑完 → 当云端文本下发 type32 / type12）
+
+    /// 语音轮提交前把设备侧本轮切到「等待回答」，并记住本轮轮次号。
+    /// 这样眼镜不会收到退出命令，回答回来时还有页面可以渲染。
+    private func beginAnswerRound() {
+        #if COMPANION_DEVICE
+        cancelAnswerWatch()
+        answerRound = controller.companionBeginAnswerRound(query: "")
+        if answerRound == nil {
+            controller.companionEndRound()
+            voiceStatus = "眼镜本轮已结束；回答只能在手机上查看。"
+        } else {
+            controller.companionKeepAnswerRoundAlive()
+        }
+        #endif
+    }
+
+    /// 起一轮「等 Hermes 跑完」的轮询；同一个任务号只推一次。
+    private func watchAnswer(taskId: String) {
+        #if COMPANION_DEVICE
+        guard answerRound != nil, !pushedAnswerTaskIDs.contains(taskId) else { return }
+        answerWatch?.cancel()
+        answerWatch = Task { @MainActor [weak self] in await self?.pollAnswer(taskId: taskId) }
+        #endif
+    }
+
+    /// 复用既有 GET /v1/hermes/state 轮询，不新造接口；只有任务终态才把回答推给眼镜。
+    private func pollAnswer(taskId: String) async {
+        #if COMPANION_DEVICE
+        let giveUp = Date().addingTimeInterval(300)     // 超过 5 分钟：给一句人话收尾，别让镜片一直等
+        while !Task.isCancelled {
+            controller.companionKeepAnswerRoundAlive()   // 持续收声模式：别让设备侧看门狗提前关轮
+            await hermes?.refresh()
+            if let task = hermes?.state?.tasks.first(where: { $0.id == taskId }) {
+                switch task.status {
+                case "done":
+                    await finishAnswer(task.answer, fallback: "任务已完成，但没有可显示的回答。", taskId: taskId)
+                    return
+                case "failed":
+                    await finishAnswer("任务未完成，请到「Hermes 任务」页查看原因。", fallback: "任务未完成。", taskId: taskId)
+                    return
+                case "stopped":
+                    await finishAnswer("任务已停止，没有回答。", fallback: "任务已停止。", taskId: taskId)
+                    return
+                default:
+                    break
+                }
+            }
+            if Date() >= giveUp {
+                await finishAnswer("任务还在执行，回答稍后可在「Hermes 任务」页查看。", fallback: "任务还在执行。", taskId: taskId)
+                return
+            }
+            do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
+        }
+        #endif
+    }
+
+    /// 收尾：把最终文本切片下发（末片 final:true 触发 type12），并记账只推一次。
+    private func finishAnswer(_ raw: String, fallback: String, taskId: String) async {
+        pushedAnswerTaskIDs.append(taskId)
+        if pushedAnswerTaskIDs.count > 32 { pushedAnswerTaskIDs.removeFirst(pushedAnswerTaskIDs.count - 32) }
+        #if COMPANION_DEVICE
+        let text = HermesAnswerText.plain(raw)
+        let sent = await pushAnswerText(text.isEmpty ? fallback : text)
+        if sent {
+            voiceStatus = "回答已发到眼镜屏（任务 " + String(taskId.prefix(8)) + "）"
+        } else if let round = answerRound, controller.companionAnswerRoundID == round {
+            // 本轮还开着但一片都没写进去：结束本轮，别让镜片停在「正在生成回答」。
+            controller.companionAnswerFailed()
+            answerRound = nil
+            voiceStatus = "回答没上屏：本轮已结束，请在手机上查看。"
+        } else {
+            voiceStatus = "回答没上屏：眼镜本轮已结束或被新的语音轮替换。"
+        }
+        #endif
+    }
+
+    /// 没有任务号 / 识别失败：也给眼镜一句人话，别让它停在「正在生成回答」。
+    private func closeAnswerRoundWith(_ text: String) async {
+        #if COMPANION_DEVICE
+        _ = await pushAnswerText(HermesAnswerText.plain(text))
+        #endif
+    }
+
+    /// 逐片下发（每片 ≤512 字节，末片 isFinal:true）；片间留 60ms，别一次灌爆传输队列。
+    /// 返回 false = 本轮已被取消/替换/掉线，不再重试。
+    private func pushAnswerText(_ text: String) async -> Bool {
+        #if COMPANION_DEVICE
+        guard let round = answerRound, controller.companionAnswerRoundID == round else { return false }
+        let pieces = HermesAnswerText.chunks(HermesAnswerText.prefix(text, bytes: HermesAnswerText.maximumBytes))
+        guard !pieces.isEmpty else { return false }
+        for (index, piece) in pieces.enumerated() {
+            if index > 0 { try? await Task.sleep(nanoseconds: 60_000_000) }
+            guard !Task.isCancelled else { return false }
+            guard controller.companionPushAnswer(piece, isFinal: index == pieces.count - 1) else { return false }
+        }
+        answerRound = nil
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    private func cancelAnswerWatch() {
+        #if COMPANION_DEVICE
+        answerWatch?.cancel(); answerWatch = nil; answerRound = nil
+        #endif
     }
     func clearText() { transcript = ""; answer = ""; transcriptFinal = false; modelComplete = false }
     private func finishTimelineTurn() {
