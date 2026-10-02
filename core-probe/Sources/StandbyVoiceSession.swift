@@ -231,6 +231,76 @@ final class StandbyVoiceSession {
         log?("云对话失败或取消，退出本轮；不伪造模型回答")
         closeRound(sendExit:true)
     }
+
+    // MARK: - Hermes 版：回答下发入口（不连云端也能开一轮）
+
+    /// host 用来确认某一片是否真的写进本轮（cloudText 是静默守卫，不返回结果）。
+    var answerByteCount: Int { answerBytes }
+
+    /// 不连云端开一轮「等待并下发回答」：
+    /// - recording：本轮收音就是这句话，等同云端句末（停收音）后进入 processing；
+    /// - idle/displaying：借既有唤醒入口开一轮，再进入 processing；
+    /// - processing：沿用正在等回答的那一轮。
+    /// 返回本轮 roundID；nil = 未开启云模式 / 未连接 / 状态不允许 / 发送失败。
+    /// 这里不发任何云端请求，回答由 host 逐片喂给 cloudText。
+    func beginAnswerRound(query: String, now: TimeInterval) -> UUID? {
+        guard cloudEnabled, enabled, let start = target else { return nil }
+        var freshRound = false
+        switch phase {
+        case .recording:
+            guard let id = cloudRoundID else { return nil }
+            cloudEndpoint(id: id, now: now)
+        case .idle, .displaying:
+            receive(from: start, type: 1, audioBytes: 0, now: now)
+            guard phase == .recording, let id = cloudRoundID else { return nil }
+            cloudEndpoint(id: id, now: now)
+            freshRound = true
+        case .processing:
+            break
+        case .disabled, .waitingForConnection:
+            return nil
+        }
+        guard phase == .processing, let id = cloudRoundID else { return nil }
+        // Hermes 任务耗时不可预知：撤掉云端那套「30 秒处理超时 / 5 秒无音频 / 120 秒会话上限」，
+        // 改由 host 的轮询负责收尾（超时会自己推一句人话再发 type12）。
+        deadline = nil
+        followupWait = nil
+        sessionDeadline = nil
+        lastDuplexAudio = nil
+        transcript = utf8Prefix(query, bytes: 512); transcriptFinal = true
+        if freshRound { answerBytes = 0 }
+        log?("Hermes 回答轮已开启 roundID=\(id.uuidString.prefix(8))；不发云端请求，等待电脑桥接任务结果")
+        return id
+    }
+
+    /// 识别原话回来后再补「问题」栏（type32 的 query 字段，≤512 字节）。
+    func setAnswerQuery(_ text: String) {
+        guard cloudEnabled, phase == .processing, cloudRoundID != nil else { return }
+        transcript = utf8Prefix(text, bytes: 512); transcriptFinal = true
+    }
+
+    /// 持续收声模式下，等 Hermes 期间给「5 秒无音频 / 120 秒会话」看门狗续命；
+    /// host 每轮询一次。守卫不成立（没有在等的回答轮）时什么都不做。
+    func keepAnswerRoundAlive(now: TimeInterval) {
+        guard cloudEnabled, active, cloudRoundID != nil else { return }
+        lastDuplexAudio = now
+        if sessionDeadline != nil { sessionDeadline = now + 120 }
+    }
+
+    /// 按 UTF-8 边界截断到指定字节数（query 字段是字节上限，不是字符数）。
+    private func utf8Prefix(_ text: String, bytes: Int) -> String {
+        guard bytes > 0 else { return "" }
+        guard text.utf8.count > bytes else { return text }
+        var out = ""
+        var used = 0
+        for character in text {
+            let size = String(character).utf8.count
+            if used + size > bytes { break }
+            out.append(character); used += size
+        }
+        return out
+    }
+
     private func finishRecording(now: TimeInterval, reply: Bool) {
         deadline = nil
         guard write(.stopAudio) else { failRound(); return }
